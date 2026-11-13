@@ -1,0 +1,64 @@
+name: Build dieD kernel (Selene)
+
+on:
+  push:
+    branches: [dieD-usb-legacy]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache device-tree-compiler flex git libelf-dev libncurses-dev libssl-dev python3 zip zlib1g-dev
+      - name: Cache Clang toolchain
+        uses: actions/cache@v4
+        with:
+          path: clang
+          key: ${{ runner.os }}-clang-14.0.6-20261022
+      - name: Cache compiler results
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ${{ runner.os }}-clang14-ccache-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-clang14-ccache-
+      - name: Build kernel and AnyKernel ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p clang out/target
+          if [[ ! -x clang/bin/clang ]]; then
+            curl -fL --retry 3 https://github.com/ZyCromerZ/Clang/releases/download/14.0.6-20261022-release/Clang-14.0.6-20261022.tar.gz | tar -xz -C clang
+          fi
+          export PATH="$PWD/clang/bin:$PATH"
+          export LD_LIBRARY_PATH="$PWD/clang/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export KBUILD_BUILD_USER=github-actions KBUILD_BUILD_HOST=github-actions
+          make O=out ARCH=arm64 selene_defconfig
+          make -j"$(nproc)" O=out ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf- Image.gz-dtb 2>&1 | tee out/build.log
+          mkdir -p out/package
+          cp -a anykernel/. out/package/
+          cp out/arch/arm64/boot/Image.gz-dtb out/package/Image.gz-dtb
+          (cd out/package && zip -qr9 ../target/dieD-selene-${GITHUB_SHA::12}.zip . -x '.git' '.git/*' '.github' '.github/*' 'README.md')
+      - name: Publish GitHub release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: died-selene-${{ github.run_number }}-${{ github.sha }}
+          name: dieD Selene build ${{ github.run_number }}
+          generate_release_notes: true
+          files: out/target/dieD-selene-*.zip
+          fail_on_unmatched_files: true
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.sha }}
+          path: out/build.log
+          if-no-files-found: warn
