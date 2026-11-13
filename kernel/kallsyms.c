@@ -12,6 +12,7 @@
  *      compression (see scripts/kallsyms.c for a more complete description)
  */
 #include <linux/kallsyms.h>
+#include <linux/module.h>
 #include <linux/init.h>
 #include <linux/seq_file.h>
 #include <linux/fs.h>
@@ -19,13 +20,14 @@
 #include <linux/err.h>
 #include <linux/proc_fs.h>
 #include <linux/sched.h>	/* for cond_resched */
+#include <linux/mm.h>
 #include <linux/ctype.h>
 #include <linux/slab.h>
 #include <linux/filter.h>
 #include <linux/compiler.h>
 #ifdef CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
 #include <linux/susfs_def.h>
-#endif // #ifdef CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+#endif
 
 #include <asm/sections.h>
 
@@ -51,6 +53,37 @@ extern const u8 kallsyms_token_table[] __weak;
 extern const u16 kallsyms_token_index[] __weak;
 
 extern const unsigned long kallsyms_markers[] __weak;
+
+static inline int is_kernel_inittext(unsigned long addr)
+{
+	if (addr >= (unsigned long)_sinittext
+	    && addr <= (unsigned long)_einittext)
+		return 1;
+	return 0;
+}
+
+static inline int is_kernel_text(unsigned long addr)
+{
+	if ((addr >= (unsigned long)_stext && addr <= (unsigned long)_etext) ||
+	    arch_is_kernel_text(addr))
+		return 1;
+	return in_gate_area_no_mm(addr);
+}
+
+static inline int is_kernel(unsigned long addr)
+{
+	if (addr >= (unsigned long)_stext && addr <= (unsigned long)_end)
+		return 1;
+	return in_gate_area_no_mm(addr);
+}
+
+static int is_ksym_addr(unsigned long addr)
+{
+	if (IS_ENABLED(CONFIG_KALLSYMS_ALL))
+		return is_kernel(addr);
+
+	return is_kernel_text(addr) || is_kernel_inittext(addr);
+}
 
 /*
  * Expand a compressed symbol data into the resulting uncompressed string,
@@ -618,37 +651,29 @@ static int s_show(struct seq_file *m, void *p)
 		seq_printf(m, "%pK %c %s\t[%s]\n", (void *)iter->value,
 			   type, iter->name, iter->module_name);
 	} else
-
-#ifndef CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-		seq_printf(m, "%pK %c %s\n", (void *)iter->value,
-			   iter->type, iter->name);
-#else
-	{
+#ifdef CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
 		if (susfs_starts_with(iter->name, "ksu_") ||
-			susfs_starts_with(iter->name, "__ksu_") ||
-			susfs_starts_with(iter->name, "susfs_") ||
-			susfs_starts_with(iter->name, "ksud") ||
-			susfs_starts_with(iter->name, "is_ksu_") ||
-			susfs_starts_with(iter->name, "is_manager_") ||
-			susfs_starts_with(iter->name, "escape_to_") ||
-			susfs_starts_with(iter->name, "setup_selinux") ||
-			susfs_starts_with(iter->name, "track_throne") ||
-			susfs_starts_with(iter->name, "on_post_fs_data") ||
-			susfs_starts_with(iter->name, "try_umount") ||
-			susfs_starts_with(iter->name, "kernelsu") ||
-			susfs_starts_with(iter->name, "__initcall__kmod_kernelsu") ||
-			susfs_starts_with(iter->name, "apply_kernelsu") ||
-			susfs_starts_with(iter->name, "handle_sepolicy") ||
-			susfs_starts_with(iter->name, "getenforce") ||
-			susfs_starts_with(iter->name, "setenforce") ||
-			susfs_starts_with(iter->name, "is_zygote"))
-		{
+		    susfs_starts_with(iter->name, "__ksu_") ||
+		    susfs_starts_with(iter->name, "susfs_") ||
+		    susfs_starts_with(iter->name, "ksud") ||
+		    susfs_starts_with(iter->name, "is_ksu_") ||
+		    susfs_starts_with(iter->name, "is_manager_") ||
+		    susfs_starts_with(iter->name, "escape_to_") ||
+		    susfs_starts_with(iter->name, "setup_selinux") ||
+		    susfs_starts_with(iter->name, "track_throne") ||
+		    susfs_starts_with(iter->name, "on_post_fs_data") ||
+		    susfs_starts_with(iter->name, "try_umount") ||
+		    susfs_starts_with(iter->name, "kernelsu") ||
+		    susfs_starts_with(iter->name, "__initcall__kmod_kernelsu") ||
+		    susfs_starts_with(iter->name, "apply_kernelsu") ||
+		    susfs_starts_with(iter->name, "handle_sepolicy") ||
+		    susfs_starts_with(iter->name, "getenforce") ||
+		    susfs_starts_with(iter->name, "setenforce") ||
+		    susfs_starts_with(iter->name, "is_zygote"))
 			return 0;
-		}
+#endif
 		seq_printf(m, "%pK %c %s\n", (void *)iter->value,
 			   iter->type, iter->name);
-	}
-#endif
 	return 0;
 }
 
@@ -677,20 +702,19 @@ static inline int kallsyms_for_perf(void)
  * Otherwise, require CAP_SYSLOG (assuming kptr_restrict isn't set to
  * block even that).
  */
-bool kallsyms_show_value(const struct cred *cred)
+int kallsyms_show_value(void)
 {
 	switch (kptr_restrict) {
 	case 0:
 		if (kallsyms_for_perf())
-			return true;
+			return 1;
 	/* fallthrough */
 	case 1:
-		if (security_capable(cred, &init_user_ns, CAP_SYSLOG,
-				     CAP_OPT_NOAUDIT) == 0)
-			return true;
+		if (has_capability_noaudit(current, CAP_SYSLOG))
+			return 1;
 	/* fallthrough */
 	default:
-		return false;
+		return 0;
 	}
 }
 
@@ -707,11 +731,7 @@ static int kallsyms_open(struct inode *inode, struct file *file)
 		return -ENOMEM;
 	reset_iter(iter, 0);
 
-	/*
-	 * Instead of checking this on every s_show() call, cache
-	 * the result here at open time.
-	 */
-	iter->show_value = kallsyms_show_value(file->f_cred);
+	iter->show_value = kallsyms_show_value();
 	return 0;
 }
 
