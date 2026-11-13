@@ -129,7 +129,6 @@ static inline int avc_hash(u32 ssid, u32 tsid, u16 tclass)
 	return (ssid ^ (tsid<<2) ^ (tclass<<4)) & (AVC_CACHE_SLOTS - 1);
 }
 
-#ifdef CONFIG_AUDIT
 /**
  * avc_dump_av - Display an access vector in human-readable form.
  * @tclass: target security class
@@ -165,6 +164,11 @@ static void avc_dump_av(struct audit_buffer *ab, u16 tclass, u32 av)
 
 	audit_log_format(ab, " }");
 }
+#ifdef CONFIG_KSU_SUSFS
+extern u32 susfs_ksu_sid;
+extern u32 susfs_priv_app_sid;
+extern struct static_key_false susfs_is_avc_log_spoofing_enabled;
+#endif
 
 /**
  * avc_dump_query - Display a SID pair and a class in human-readable form.
@@ -188,6 +192,19 @@ static void avc_dump_query(struct audit_buffer *ab, struct selinux_state *state,
 	}
 
 	rc = security_sid_to_context(state, tsid, &scontext, &scontext_len);
+
+#ifdef CONFIG_KSU_SUSFS
+	if (static_branch_likely(&susfs_is_avc_log_spoofing_enabled)) {
+		if (unlikely(tsid == susfs_ksu_sid)) {
+			if (rc)
+				audit_log_format(ab, " tsid=%d", susfs_priv_app_sid);
+			else
+				audit_log_format(ab, " tcontext=%s", "u:r:priv_app:s0:c512,c768");
+			goto bypass_orig_flow;
+		}
+	}
+#endif
+
 	if (rc)
 		audit_log_format(ab, " tsid=%d", tsid);
 	else {
@@ -195,10 +212,12 @@ static void avc_dump_query(struct audit_buffer *ab, struct selinux_state *state,
 		kfree(scontext);
 	}
 
+#ifdef CONFIG_KSU_SUSFS
+bypass_orig_flow:
+#endif
 	BUG_ON(!tclass || tclass >= ARRAY_SIZE(secclass_map));
 	audit_log_format(ab, " tclass=%s", secclass_map[tclass-1].name);
 }
-#endif
 
 /**
  * avc_init - Initialize the AVC.
@@ -492,7 +511,6 @@ static inline int avc_xperms_audit(struct selinux_state *state,
 				   u8 perm, int result,
 				   struct common_audit_data *ad)
 {
-#ifdef CONFIG_AUDIT
 	u32 audited, denied;
 
 	audited = avc_xperms_audit_required(
@@ -501,9 +519,6 @@ static inline int avc_xperms_audit(struct selinux_state *state,
 		return 0;
 	return slow_avc_audit(state, ssid, tsid, tclass, requested,
 			audited, denied, result, ad, 0);
-#else
-	return 0;
-#endif
 }
 
 static void avc_node_free(struct rcu_head *rhead)
@@ -657,7 +672,7 @@ static int avc_latest_notif_update(struct selinux_avc *avc,
 	spin_lock_irqsave(&notif_lock, flag);
 	if (is_insert) {
 		if (seqno < avc->avc_cache.latest_notif) {
-			printk(KERN_WARNING "SELinux: avc:  seqno %d < latest_notif %d\n",
+			pr_warn("SELinux: avc:  seqno %d < latest_notif %d\n",
 			       seqno, avc->avc_cache.latest_notif);
 			ret = -EAGAIN;
 		}
@@ -730,7 +745,6 @@ found:
 	return node;
 }
 
-#ifdef CONFIG_AUDIT
 /**
  * avc_audit_pre_callback - SELinux specific information
  * will be called by generic audit code
@@ -824,7 +838,6 @@ noinline int slow_avc_audit(struct selinux_state *state,
 	common_lsm_audit(a, avc_audit_pre_callback, avc_audit_post_callback);
 	return 0;
 }
-#endif
 
 /**
  * avc_add_callback - Register a callback for security events.
