@@ -2,7 +2,7 @@ name: Build dieD kernel (Selene)
 
 on:
   push:
-    branches: [dieD-usb-legacy]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -10,14 +10,14 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache device-tree-compiler flex git libelf-dev libncurses-dev libssl-dev libxml2 python3 zip zlib1g-dev
+          sudo apt-get install -y bc bison build-essential ccache curl device-tree-compiler flex git gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf libelf-dev libncurses-dev libssl-dev python3 zip zlib1g-dev
       - name: Cache Clang toolchain
         uses: actions/cache@v4
         with:
@@ -41,7 +41,8 @@ jobs:
           export LD_LIBRARY_PATH="$PWD/clang/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           export KBUILD_BUILD_USER=github-actions KBUILD_BUILD_HOST=github-actions
           make O=out ARCH=arm64 selene_defconfig
-          make -j"$(nproc)" O=out ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf- Image.gz-dtb 2>&1 | tee out/build.log
+          ccache --max-size=2G
+          make -j"$(nproc)" O=out ARCH=arm64 CC="ccache clang" LD=ld.lld LLVM=1 LLVM_IAS=1 CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf- Image.gz-dtb 2>&1 | tee out/build.log
           mkdir -p out/package
           cp -a anykernel/. out/package/
           cp out/arch/arm64/boot/Image.gz-dtb out/package/Image.gz-dtb
