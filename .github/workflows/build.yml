@@ -17,7 +17,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache device-tree-compiler flex git libelf-dev libncurses-dev libssl-dev python3 zip zlib1g-dev
+          sudo apt-get install -y bc bison build-essential ccache device-tree-compiler flex git libelf-dev libncurses-dev libssl-dev libxml2 python3 zip zlib1g-dev
       - name: Cache Clang toolchain
         uses: actions/cache@v4
         with:
